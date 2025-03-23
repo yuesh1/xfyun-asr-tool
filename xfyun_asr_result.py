@@ -24,6 +24,7 @@ class XfyunASRResult:
         self.app_id = app_id
         self.secret_key = secret_key
         self.base_url = "https://raasr.xfyun.cn/api"
+        self.task_queue = {}
     
     def _generate_signature(self):
         """
@@ -117,13 +118,27 @@ class XfyunASRResult:
             task_id: 任务ID
             
         Returns:
-            dict: 转写结果
+            list: 转写结果文本列表
         """
+        # 直接向科大讯飞API发送请求获取结果
         params = self._generate_params("getResult", task_id=task_id)
         result = self._send_request("getResult", params)
         
         if result.get("ok") and result.get("data"):
-            return result["data"]
+            # 提取转写结果文本
+            try:
+                sentences = []
+                for sentence in result["data"].get("lattice", []):
+                    if "json_1best" in sentence:
+                        json_result = json.loads(sentence["json_1best"])
+                        if "st" in json_result and "rt" in json_result["st"]:
+                            for word in json_result["st"]["rt"][0]["ws"]:
+                                for character in word["cw"]:
+                                    sentences.append(character["w"])
+                return ''.join(sentences)
+            except Exception as e:
+                print(f"解析转写结果失败: {str(e)}")
+                return result["data"]
         else:
             print(f"获取结果失败: {result.get('failed', '未知错误')}")
             return None
@@ -282,3 +297,101 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+# 用于FastAPI的结果查询函数
+def get_result(task_id, app_id=None, secret_key=None):
+    """
+    获取转写任务的状态和结果
+    
+    Args:
+        task_id: 任务ID
+        app_id: 科大讯飞应用ID（可选）
+        secret_key: 应用密钥（可选）
+        
+    Returns:
+        tuple: (status, result)
+            status: 任务状态，可能是 'processing', 'completed', 'failed', 'not_found'
+            result: 转写结果，如果任务未完成则为None
+    """
+    # 从xfyun_asr模块导入task_queue
+    from xfyun_asr import task_queue
+    
+    # 首先，检查是否有足够的API凭证
+    if not app_id or not secret_key:
+        # 如果没有提供完整的API凭证，则只能从内存中查询
+        task = task_queue.get(task_id)
+        if not task:
+            return 'not_found', None
+    else:
+        # 如果提供了完整的API凭证
+        # 首先尝试从内存中查询
+        task = task_queue.get(task_id)
+        
+        # 如果在内存中找不到任务，则尝试直接从科大讯飞服务器获取结果
+        if not task:
+            try:
+                print(f"尝试直接使用科大讯飞API查询任务: {task_id}")
+                result_api = XfyunASRResult(app_id, secret_key)
+                # 先检查进度
+                progress = result_api.get_progress(task_id)
+                
+                if progress is not None:
+                    if progress >= 100:
+                        # 如果转写完成，获取结果
+                        result_data = result_api.get_result(task_id)
+                        if result_data:
+                            return 'completed', result_data
+                        else:
+                            return 'failed', "无法获取转写结果"
+                    else:
+                        # 如果转写未完成，返回处理中状态
+                        return 'processing', f'转写进度: {progress}%'
+                else:
+                    return 'failed', "无法获取转写进度"
+            except Exception as e:
+                print(f"直接查询科大讯飞API失败: {str(e)}")
+                return 'failed', str(e)
+            return 'not_found', None
+    
+    # 检查任务状态
+    if task['status'] == 'processing':
+        if task['future'].done():
+            try:
+                # 获取科大讯飞API任务ID
+                xfyun_task_id = task['future'].result()
+                task['xfyun_task_id'] = xfyun_task_id
+                
+                # 使用任务中存储的API凭证或传入的API凭证
+                used_app_id = app_id or task.get('app_id')
+                used_secret_key = secret_key or task.get('secret_key')
+                
+                # 如果有有效的API凭证，则尝试获取结果
+                if used_app_id and used_secret_key and xfyun_task_id:
+                    result_api = XfyunASRResult(used_app_id, used_secret_key)
+                    # 查询转写进度
+                    progress = result_api.get_progress(xfyun_task_id)
+                    
+                    # 确保进度不是None再进行比较
+                    if progress is not None and progress >= 100:
+                        # 如果转写完成，获取结果
+                        task['result'] = result_api.get_result(xfyun_task_id)
+                        task['status'] = 'completed'
+                    elif progress is None:
+                        # 如果进度为None，设置为失败状态
+                        task['status'] = 'failed'
+                        task['result'] = '无法获取转写进度'
+                    else:
+                        # 如果转写未完成，保持处理中状态
+                        return 'processing', f'转写进度: {progress}%'
+                else:
+                    # 没有有效的API凭证，无法查询结果
+                    task['status'] = 'failed'
+                    task['result'] = '缺少有效的API凭证或任务ID'
+            except Exception as e:
+                task['status'] = 'failed'
+                task['result'] = str(e)
+        else:
+            return 'processing', None
+    
+    return task['status'], task['result']

@@ -1,2 +1,5 @@
-requests>=2.25.0
+requests==2.25.1
 moviepy>=1.0.3
+fastapi>=0.68.0
+uvicorn>=0.15.0
+python-multipart>=0.0.5

@@ -27,6 +27,8 @@ import time
 import sys
 import tempfile
 import requests
+import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 # 尝试不同的moviepy导入方式
 try:
@@ -51,6 +53,9 @@ API_GET_RESULT = '/getResult'
 # 文件分片大小（10MB）
 FILE_PIECE_SIZE = 10 * 1024 * 1024
 
+# 异步任务队列
+task_queue = {}
+executor = ThreadPoolExecutor(max_workers=5)
 
 class SliceIdGenerator:
     """生成上传分片ID的工具类"""
@@ -493,10 +498,63 @@ class XfyunASR:
             time.sleep(interval)
 
 
+def process_audio(file_path, app_id=None, secret_key=None):
+    """
+    处理音频文件并上传到科大讯飞服务器
+    
+    Args:
+        file_path: 音频文件路径
+        app_id: 科大讯飞应用ID（可选）
+        secret_key: 应用密钥（可选）
+        
+    Returns:
+        str: 科大讯飞API任务ID
+    """
+    # 如果没有提供API凭证，则使用环境变量
+    if app_id is None:
+        app_id = os.environ.get('XFYUN_APP_ID', 'YOUR_APP_ID')
+    if secret_key is None:
+        secret_key = os.environ.get('XFYUN_SECRET_KEY', 'YOUR_SECRET_KEY')
+    
+    # 创建讯飞实例并上传文件
+    asr = XfyunASR(app_id, secret_key)
+    xfyun_task_id = asr.upload_file(file_path)
+    return xfyun_task_id
+
+def async_process(audio_path, app_id=None, secret_key=None):
+    """
+    异步处理音频文件
+    
+    Args:
+        audio_path: 音频文件路径
+        app_id: 科大讯飞应用ID（可选）
+        secret_key: 应用密钥（可选）
+        
+    Returns:
+        str: 内部任务ID，用于查询转写结果
+    """
+    # 生成内部任务ID
+    internal_task_id = str(uuid.uuid4())
+    
+    # 异步提交处理任务
+    future = executor.submit(process_audio, audio_path, app_id, secret_key)
+    
+    # 将任务信息存入队列
+    task_queue[internal_task_id] = {
+        'future': future,
+        'status': 'processing',
+        'result': None,
+        'file_path': audio_path,  # 存储文件路径以便后续处理
+        'xfyun_task_id': None,    # 初始化科大讯飞API任务ID
+        'app_id': app_id,          # 存储API凭证以便后续查询
+        'secret_key': secret_key
+    }
+    
+    return internal_task_id
+
 def upload_command(args):
     """上传文件命令处理函数"""
-    asr = XfyunASR(args.app_id, args.secret_key)
-    task_id = asr.upload_file(args.file_path)
+    task_id = async_process(args.file_path)
     
     if task_id:
         result = {

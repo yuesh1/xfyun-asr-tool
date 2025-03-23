@@ -325,3 +325,29 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+# 用于FastAPI的文件上传处理函数
+def handle_upload(file_path, app_id=None, secret_key=None):
+    """
+    处理上传的文件并返回任务ID
+    
+    Args:
+        file_path: 上传文件的路径
+        app_id: 科大讯飞应用ID（可选）
+        secret_key: 应用密钥（可选）
+        
+    Returns:
+        str: 任务ID
+    """
+    # 如果没有提供API凭证，则使用环境变量
+    if app_id is None:
+        app_id = os.environ.get('XFYUN_APP_ID', 'YOUR_APP_ID')
+    if secret_key is None:
+        secret_key = os.environ.get('XFYUN_SECRET_KEY', 'YOUR_SECRET_KEY')
+    
+    # 创建上传实例并处理文件
+    asr = XfyunASRUpload(app_id, secret_key)
+    task_id = asr.upload_file(file_path)
+    
+    return task_id
