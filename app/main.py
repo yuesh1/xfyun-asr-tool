@@ -120,16 +120,18 @@ async def upload_direct_url(request: DirectUrlRequest):
 async def upload_legacy(file: UploadFile = File(...), app_id: str = Form(None), secret_key: str = Form(None)):
     return await upload_file(file, app_id, secret_key)
 
-@app.get('/result/{task_id}')
-async def get_transcription(
-    task_id: str,
-    app_id: str = Query(None),
-    secret_key: str = Query(None),
-    use_cache: bool = Query(True, description="是否使用缓存结果")
-):
+# 定义获取结果的请求模型
+class ResultRequest(BaseModel):
+    task_id: str
+    app_id: Optional[str] = None
+    secret_key: Optional[str] = None
+    use_cache: bool = True
+
+@app.post('/result')
+async def get_transcription(request: ResultRequest):
     try:
         # 使用新版API获取转写结果，传递缓存控制参数
-        status, result = get_transcription_result(task_id, app_id, secret_key, use_cache=use_cache)
+        status, result = get_transcription_result(request.task_id, request.app_id, request.secret_key, use_cache=request.use_cache)
         
         # 检查状态是否为'not_found'
         if status == 'not_found':
@@ -139,7 +141,7 @@ async def get_transcription(
         return {
             'status': status, 
             'text': result,
-            'from_cache': use_cache and status in ['completed', 'failed', 'not_found']
+            'from_cache': request.use_cache and status in ['completed', 'failed', 'not_found']
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"获取结果失败: {str(e)}")
